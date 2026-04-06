@@ -9,6 +9,7 @@ import 'maze_generator.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
   await SettingsService.instance.init();
   runApp(const MazeEscapeApp());
 }
@@ -475,6 +476,7 @@ class _MazeGameScreenState extends State<MazeGameScreen> {
   bool isCompleted = false;
   bool isPaused = false;
   bool newRecord = false;
+  bool _isDragging = false; // Touch-drag tracking
 
   @override
   void initState() {
@@ -490,6 +492,7 @@ class _MazeGameScreenState extends State<MazeGameScreen> {
     startTime = DateTime.now();
     isCompleted = false;
     isPaused = false;
+    _isDragging = false;
 
     timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!isCompleted && !isPaused) {
@@ -670,6 +673,75 @@ class _MazeGameScreenState extends State<MazeGameScreen> {
     );
   }
 
+  /// Touch-drag: calculate which cell a screen position maps to,
+  /// then step the player toward it one cell at a time (respecting walls).
+  void _handleDragUpdate(Offset localPosition, double mazeSize, Offset mazeOrigin) {
+    if (isCompleted || isPaused) return;
+
+    final cellSize = mazeSize / widget.gridSize;
+
+    // Convert touch position to grid coordinates
+    final touchCol = ((localPosition.dx - mazeOrigin.dx) / cellSize).floor();
+    final touchRow = ((localPosition.dy - mazeOrigin.dy) / cellSize).floor();
+
+    // Clamp to valid range
+    final targetRow = touchRow.clamp(0, widget.gridSize - 1);
+    final targetCol = touchCol.clamp(0, widget.gridSize - 1);
+
+    // Move one step toward the target (prefer the axis with more distance)
+    if (targetRow == playerRow && targetCol == playerCol) return;
+
+    final dRow = targetRow - playerRow;
+    final dCol = targetCol - playerCol;
+
+    // Try the primary direction first, then the secondary
+    if (dRow.abs() >= dCol.abs()) {
+      // Try vertical first
+      if (dRow > 0) {
+        if (_canMove(0, 1)) { _move(0, 1); return; }
+      } else if (dRow < 0) {
+        if (_canMove(0, -1)) { _move(0, -1); return; }
+      }
+      // Fallback to horizontal
+      if (dCol > 0) {
+        if (_canMove(1, 0)) { _move(1, 0); return; }
+      } else if (dCol < 0) {
+        if (_canMove(-1, 0)) { _move(-1, 0); return; }
+      }
+    } else {
+      // Try horizontal first
+      if (dCol > 0) {
+        if (_canMove(1, 0)) { _move(1, 0); return; }
+      } else if (dCol < 0) {
+        if (_canMove(-1, 0)) { _move(-1, 0); return; }
+      }
+      // Fallback to vertical
+      if (dRow > 0) {
+        if (_canMove(0, 1)) { _move(0, 1); return; }
+      } else if (dRow < 0) {
+        if (_canMove(0, -1)) { _move(0, -1); return; }
+      }
+    }
+  }
+
+  /// Check if the player can move in a given direction (not blocked by wall).
+  bool _canMove(int dx, int dy) {
+    final currentCell = maze.grid[playerRow][playerCol];
+    final newRow = playerRow + dy;
+    final newCol = playerCol + dx;
+
+    if (newRow < 0 || newRow >= widget.gridSize || newCol < 0 || newCol >= widget.gridSize) {
+      return false;
+    }
+
+    if (dx == 1 && currentCell.rightWall) return false;
+    if (dx == -1 && currentCell.leftWall) return false;
+    if (dy == 1 && currentCell.bottomWall) return false;
+    if (dy == -1 && currentCell.topWall) return false;
+
+    return true;
+  }
+
   void _togglePause() {
     setState(() {
       isPaused = !isPaused;
@@ -731,6 +803,8 @@ class _MazeGameScreenState extends State<MazeGameScreen> {
       );
     }
 
+    final mazeDisplaySize = min(screenWidth * 0.9, 400.0);
+
     return Scaffold(
       backgroundColor: Colors.grey.shade900,
       appBar: AppBar(
@@ -750,17 +824,50 @@ class _MazeGameScreenState extends State<MazeGameScreen> {
             children: [
               Expanded(
                 child: Center(
-                  child: RepaintBoundary(
-                    child: CustomPaint(
-                      size: Size(
-                        min(screenWidth * 0.9, 400),
-                        min(screenWidth * 0.9, 400),
-                      ),
-                      painter: MazePainter(maze, playerRow, playerCol),
-                    ),
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      // Calculate the maze origin for drag hit-testing
+                      final mazeOriginX = (constraints.maxWidth - mazeDisplaySize) / 2;
+                      final mazeOriginY = (constraints.maxHeight - mazeDisplaySize) / 2;
+                      final mazeOrigin = Offset(mazeOriginX, mazeOriginY);
+
+                      return GestureDetector(
+                        onPanStart: (details) {
+                          if (isCompleted || isPaused) return;
+                          // Check if touch is on/near the player
+                          final cellSize = mazeDisplaySize / widget.gridSize;
+                          final playerCenterX = mazeOrigin.dx + playerCol * cellSize + cellSize / 2;
+                          final playerCenterY = mazeOrigin.dy + playerRow * cellSize + cellSize / 2;
+                          final dist = (details.localPosition - Offset(playerCenterX, playerCenterY)).distance;
+                          // Allow drag start within 1.5 cells of the player
+                          if (dist < cellSize * 1.5) {
+                            _isDragging = true;
+                          }
+                        },
+                        onPanUpdate: (details) {
+                          if (_isDragging) {
+                            _handleDragUpdate(details.localPosition, mazeDisplaySize, mazeOrigin);
+                          }
+                        },
+                        onPanEnd: (_) {
+                          _isDragging = false;
+                        },
+                        child: RepaintBoundary(
+                          child: CustomPaint(
+                            size: Size(constraints.maxWidth, constraints.maxHeight),
+                            painter: MazePainter(
+                              maze, playerRow, playerCol,
+                              mazeSize: mazeDisplaySize,
+                              mazeOrigin: mazeOrigin,
+                            ),
+                          ),
+                        ),
+                      );
+                    },
                   ),
                 ),
               ),
+              // Keep arrow buttons as fallback controls
               Padding(
                 padding: const EdgeInsets.all(32),
                 child: Column(
@@ -848,12 +955,21 @@ class MazePainter extends CustomPainter {
   final Maze maze;
   final int playerRow;
   final int playerCol;
+  final double mazeSize;
+  final Offset mazeOrigin;
 
-  MazePainter(this.maze, this.playerRow, this.playerCol);
+  MazePainter(this.maze, this.playerRow, this.playerCol, {
+    required this.mazeSize,
+    required this.mazeOrigin,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
-    final cellSize = size.width / maze.cols;
+    // Translate to maze origin so the maze is centered
+    canvas.save();
+    canvas.translate(mazeOrigin.dx, mazeOrigin.dy);
+
+    final cellSize = mazeSize / maze.cols;
     final wallPaint = Paint()
       ..color = Colors.white
       ..strokeWidth = 2.0;
@@ -916,6 +1032,8 @@ class MazePainter extends CustomPainter {
       cellSize / 3,
       playerPaint,
     );
+
+    canvas.restore();
   }
 
   @override

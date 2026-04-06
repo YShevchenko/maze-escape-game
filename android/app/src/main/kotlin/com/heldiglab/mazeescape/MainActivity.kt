@@ -1,4 +1,4 @@
-package top.heldig.maze_escape
+package com.heldiglab.mazeescape
 
 import io.flutter.embedding.android.FlutterActivity
 
